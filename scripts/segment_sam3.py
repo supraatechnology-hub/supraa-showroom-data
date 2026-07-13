@@ -12,9 +12,12 @@ import sys
 
 import boto3
 import numpy as np
+import requests
 import torch
 from PIL import Image
 from transformers import Sam3Model, Sam3Processor
+
+MIN_COVERAGE_FAIL = 0.1  # % coverage below which a mask is treated as blank
 
 # ── R2 client ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +45,17 @@ def r2_write_json(r2, bucket, key, data):
     body = json.dumps(data, indent=2).encode()
     r2.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
     print(f"[R2] Uploaded: {key}")
+
+def mark_room_ready(room_id):
+    base   = os.environ["BACKEND_URL"].rstrip("/")
+    secret = os.environ["INTERNAL_ROOM_SECRET"]
+    res = requests.post(
+        f"{base}/internal/room-status",
+        json={"room_id": room_id, "has_masks": True},
+        headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    res.raise_for_status()
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -128,6 +142,49 @@ def run_precompute(room_id, category, model, processor, device):
     print(f"[DONE] Masks for {room_id} written to R2.")
 
 
+def run_precompute_all(model, processor, device):
+    manifest_path = os.path.join(os.path.dirname(__file__), '..', 'rooms_manifest.json')
+    with open(manifest_path) as f:
+        rooms = json.load(f)
+
+    r2     = get_r2()
+    bucket = os.environ['R2_BUCKET_NAME']
+    succeeded, failed = [], []
+
+    for entry in rooms:
+        room_id, category = entry['room_id'], entry['category']
+        print(f"\n=== {room_id} ({category}) ===")
+        try:
+            key   = f"rooms/{room_id}/original.jpg"
+            image = r2_read_image(r2, bucket, key)
+            masks = segment_image(image, category, model, processor, device)
+
+            if all(v is None for v in masks.values()):
+                raise RuntimeError("segmentation produced no masks")
+            blank = [s for s, arr in masks.items()
+                     if arr is not None and (arr > 127).sum() / arr.size * 100 < MIN_COVERAGE_FAIL]
+            if blank:
+                raise RuntimeError(f"blank mask(s): {blank}")
+
+            for surface, arr in masks.items():
+                if arr is not None:
+                    r2_write_png(r2, bucket, f"rooms/{room_id}/{surface}_mask.png", arr)
+
+            mark_room_ready(room_id)
+            print(f"[DONE] {room_id} ready.")
+            succeeded.append(room_id)
+        except Exception as e:
+            print(f"[ERROR] {room_id}: {e}")
+            r2_write_json(r2, bucket, f"rooms/{room_id}/error.json", {"error": str(e), "room_id": room_id})
+            failed.append(room_id)
+
+    print(f"\n[SUMMARY] {len(succeeded)} succeeded, {len(failed)} failed.")
+    if succeeded: print(f"  OK:     {', '.join(succeeded)}")
+    if failed:    print(f"  FAILED: {', '.join(failed)}")
+    if not succeeded:
+        sys.exit(1)
+
+
 def run_user_upload(image_hash, category, model, processor, device):
     r2     = get_r2()
     bucket = os.environ['R2_BUCKET_NAME']
@@ -161,7 +218,7 @@ def run_user_upload(image_hash, category, model, processor, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode",        choices=["precompute", "user_upload"], required=True)
+    parser.add_argument("--mode",        choices=["precompute", "precompute_all", "user_upload"], required=True)
     parser.add_argument("--room-id",     default=None)
     parser.add_argument("--image-hash",  default=None)
     parser.add_argument("--category",    default=None)
@@ -174,6 +231,8 @@ if __name__ == "__main__":
         if not args.room_id or not args.category:
             print("ERROR: --room-id and --category required for precompute"); sys.exit(1)
         run_precompute(args.room_id, args.category, model, processor, device)
+    elif args.mode == "precompute_all":
+        run_precompute_all(model, processor, device)
     else:
         if not args.image_hash or not args.category:
             print("ERROR: --image-hash and --category required for user_upload"); sys.exit(1)

@@ -1,0 +1,10 @@
+[
+  { "room_id": "balcony_01",     "category": "balcony" },
+  { "room_id": "bathroom_01",    "category": "bathroom" },
+  { "room_id": "bedroom_01",     "category": "bedroom" },
+  { "room_id": "entrance_01",    "category": "entrance" },
+  { "room_id": "kitchen_01",     "category": "kitchen" },
+  { "room_id": "living_room_01", "category": "living_room" },
+  { "room_id": "shower_01",      "category": "shower" },
+  { "room_id": "toilet_01",      "category": "toilet" }
+]

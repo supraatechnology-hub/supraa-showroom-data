@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       room_id:
-        description: "Room ID (e.g. kitchen_01)"
-        required: true
+        description: "Leave blank to process every room in rooms_manifest.json. Fill in to do just one (e.g. kitchen_01)."
+        required: false
       client_slug:
-        description: "Client slug (e.g. rajtilesdelhi, goldengranite)"
-        required: true
+        description: "Client slug — cosmetic only, not used in any file path"
+        required: false
+        default: "demo"
       category:
-        description: "Room category (e.g. kitchen, bathroom, living_room)"
-        required: true
-        default: "living_room"
+        description: "Required only when room_id is set (e.g. kitchen, bathroom, living_room)"
+        required: false
 
 jobs:
   segment:
@@ -44,7 +44,12 @@ jobs:
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install transformers accelerate Pillow numpy boto3 requests
 
-      - name: Run SAM 3 segmentation
+      - name: Run SAM 3 segmentation (all rooms in rooms_manifest.json)
+        if: ${{ inputs.room_id == '' }}
+        run: python scripts/segment_sam3.py --mode precompute_all
+
+      - name: Run SAM 3 segmentation (single room)
+        if: ${{ inputs.room_id != '' }}
         env:
           ROOM_ID:     ${{ inputs.room_id }}
           CLIENT_SLUG: ${{ inputs.client_slug }}
@@ -56,7 +61,8 @@ jobs:
             --category "$CATEGORY" \
             --client-slug "$CLIENT_SLUG"
 
-      - name: Validate masks
+      - name: Validate masks (single room)
+        if: ${{ inputs.room_id != '' }}
         env:
           ROOM_ID:     ${{ inputs.room_id }}
           CLIENT_SLUG: ${{ inputs.client_slug }}
@@ -65,7 +71,8 @@ jobs:
             --client-slug "$CLIENT_SLUG" \
             --room-id "$ROOM_ID"
 
-      - name: Mark room ready via backend
+      - name: Mark room ready via backend (single room)
+        if: ${{ inputs.room_id != '' }}
         env:
           ROOM_ID: ${{ inputs.room_id }}
         run: |
